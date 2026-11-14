@@ -12,13 +12,19 @@ the mobile data path uses the inbox Mobile Broadband class driver.
 
 ## Status
 
-**At the time of writing nothing in this repository has been run on
-hardware.** The only measurement behind it is the device enumeration
-below, taken on the TaishanPi 3M under Windows 11 23H2 ARM64 (build 22631)
-on 2026-11-14. Everything else is inferred from Microsoft's documentation,
-the Linux kernel drivers for this module, Quectel's Linux documentation and
-the module's behaviour under Linux on the same board. Each section says
-which.
+First run on hardware, 2026-11-14, TaishanPi 3M, Windows 11 23H2 ARM64
+(build 22631), module firmware EC20CEFILGR08A03M1G: with
+`ec20-ports.inf` installed, `usbser.sys` started on all four interfaces
+(MI_00 to MI_03, problem code 0) and they appeared as COM3 to COM6. The AT
+port answered `AT` with `OK`, and `Get-Ec20Status.ps1` read the module's
+identity, signal (`+CSQ: 22,99`) and serving cell. The module reported
+`+CME ERROR: 10` to `AT+CPIN?` (no SIM seen) in that run, so nothing that
+needs a SIM has been tried. One run, one board.
+
+Everything not listed as measured in the table below is inferred from
+Microsoft's documentation, the Linux kernel drivers for this module,
+Quectel's Linux documentation and the module's behaviour under Linux on the
+same board. Each section says which.
 
 CI validates the INFs with `infverif`, builds catalogs with `inf2cat` for
 the ARM64 Windows 10/11 versions up to 23H2, test-signs them, verifies the
@@ -29,9 +35,9 @@ not that it works.
 | Part | State |
 |---|---|
 | Device enumeration (below) | measured |
-| `ec20-ports.inf` (usbser COM ports) | builds, signs; untested; may fail with Code 10, see below |
+| `ec20-ports.inf` (usbser COM ports) | measured: four COM ports, AT answers (one run) |
 | `ec20-winusb.inf` + `ec20at.exe` | builds, signs; untested |
-| PowerShell scripts | parse in PS 5.1; untested against a modem |
+| PowerShell scripts | `Install-Ec20Driver`, `Send-Ec20At`, `Get-Ec20Status` run on the board; the others untested |
 | MBIM mobile data | documented procedure only; untested on Windows |
 | GNSS, call audio | AT sequences measured under Linux on this module; untested on Windows |
 

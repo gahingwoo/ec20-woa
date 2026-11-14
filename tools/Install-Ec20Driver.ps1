@@ -26,10 +26,13 @@ Windows PowerShell 5.1 compatible. SPDX-License-Identifier: MIT
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][ValidateSet('Usbser', 'WinUsb', 'None')][string]$Variant,
-    [string]$PackageRoot = (Join-Path $PSScriptRoot '..'),
+    [string]$PackageRoot = '',
     [switch]$ImportCertificate
 )
 $ErrorActionPreference = 'Stop'
+# Not as the parameter's default: under powershell.exe -File on Windows
+# PowerShell 5.1 $PSScriptRoot is still empty while defaults are bound.
+if (-not $PackageRoot) { $PackageRoot = Join-Path $PSScriptRoot '..' }
 Import-Module (Join-Path $PSScriptRoot 'Ec20.psm1') -Force
 
 $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
