@@ -1,0 +1,8 @@
+* text=auto
+*.inf text eol=crlf
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+*.txt text eol=crlf
+*.c text eol=lf
+*.md text eol=lf
+*.yml text eol=lf

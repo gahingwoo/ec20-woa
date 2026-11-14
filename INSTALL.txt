@@ -1,0 +1,36 @@
+ec20-woa: Quectel EC20/EC25 (USB 2C7C:0125) on Windows 11 ARM64
+
+NOTHING IN THIS PACKAGE HAS BEEN TESTED ON HARDWARE YET. See README.md.
+
+CONTENTS
+
+  driver\usbser\   ec20-ports.inf + .cat   COM ports through the inbox usbser.sys
+  driver\winusb\   ec20-winusb.inf + .cat  WinUSB binding, for tools\ec20at.exe
+  tools\           PowerShell scripts, Ec20.psm1, ec20at.exe (ARM64)
+  ec20-woa-test.cer                        the certificate this CI run signed with
+  README.md
+
+Neither package contains a driver binary. The catalogs are test-signed with
+a certificate made for this one CI run, so its certificate must be trusted.
+
+INSTALL (elevated Windows PowerShell, in the folder this file is in)
+
+  Get-ChildItem -Recurse | Unblock-File
+  Set-ExecutionPolicy -Scope Process Bypass
+  .\tools\Install-Ec20Driver.ps1 -Variant Usbser -ImportCertificate
+
+  Device Manager > Ports (COM & LPT) should then list four "EC20 ... (usbser)"
+  ports. Test:
+
+  .\tools\Send-Ec20At.ps1 AT                 (expect: OK)
+  .\tools\Get-Ec20Status.ps1
+
+IF A PORT SHOWS CODE 10, OR OPENING IT FAILS
+
+  .\tools\Install-Ec20Driver.ps1 -Variant WinUsb
+  .\tools\ec20at.exe --list
+  .\tools\Send-Ec20At.ps1 AT                 (the scripts use ec20at.exe now)
+
+REMOVE
+
+  .\tools\Install-Ec20Driver.ps1 -Variant None

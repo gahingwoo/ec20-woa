@@ -1,0 +1,195 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  WDK_VERSION: '10.0.26100.0'
+
+jobs:
+  lint:
+    name: text and GUID checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ASCII only (no em or en dashes, no smart quotes)
+        run: |
+          if git ls-files -z | xargs -0 grep -nP '[^\x00-\x7F]'; then
+            echo "::error::non-ASCII characters in the files above"
+            exit 1
+          fi
+
+      - name: ec20at.c uses the device interface GUIDs of ec20-winusb.inf
+        run: |
+          python3 - <<'EOF'
+          import re, sys
+          inf = open('inf/winusb/ec20-winusb.inf', encoding='ascii').read()
+          src = open('tools/ec20at/ec20at.c', encoding='ascii').read()
+          want = {}
+          for sect, guid in re.findall(r'\[Ec20(\w+)_AddReg\]\s*\r?\nHKR,,DeviceInterfaceGUIDs,0x10000,"\{([0-9A-F-]+)\}"', inf):
+              want[sect.lower()] = guid.upper()
+          have = {}
+          for name, a, b, c, rest in re.findall(r'\{ "(\w+)",\s*\d+, \{ 0x([0-9A-F]+), 0x([0-9A-F]+), 0x([0-9A-F]+), \{ ([^}]*) \} \} \}', src):
+              d = [x.strip()[2:] for x in rest.split(',')]
+              have[name] = f'{a}-{b}-{c}-{d[0]}{d[1]}-{"".join(d[2:])}'.upper()
+          print('INF:', want)
+          print('C:  ', have)
+          if len(want) != 4 or want != have:
+              sys.exit('GUID mismatch between the INF and ec20at.c')
+          EOF
+
+  package:
+    name: driver packages and tools (ARM64, test-signed)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scripts parse and import in Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $PSVersionTable.PSVersion | Out-Host
+          $bad = 0
+          Get-ChildItem tools -Recurse -Include *.ps1, *.psm1 | ForEach-Object {
+            $tok = $null; $err = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tok, [ref]$err)
+            if ($err) {
+              $err | ForEach-Object { Write-Host ('{0}:{1}: {2}' -f $_.Extent.File, $_.Extent.StartLineNumber, $_.Message) }
+              $bad++
+            } else { Write-Host ('parses: ' + $_.Name) }
+          }
+          if ($bad) { throw "$bad script(s) do not parse in Windows PowerShell 5.1" }
+          Import-Module .\tools\Ec20.psm1 -Force
+          Get-Command -Module Ec20 | Format-Table Name | Out-Host
+          # No modem here: the scripts must fail with a clear message, not crash.
+          try { Get-Ec20Transport -Role At; throw 'found an EC20 on the runner?' }
+          catch { Write-Host ('expected failure: ' + $_.Exception.Message) }
+
+      - name: Build ec20at.exe (ARM64, static CRT)
+        shell: pwsh
+        run: |
+          $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vsw -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath
+          if (-not $vs) { throw 'no Visual Studio with the ARM64 C++ tools on this runner' }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvarsall.bat'
+          New-Item -ItemType Directory -Force out | Out-Null
+          cmd /c "`"$vcvars`" x64_arm64 >nul && cl /nologo /W4 /WX /O2 /MT /DUNICODE /D_UNICODE tools\ec20at\ec20at.c /Foout\ /Feout\ec20at.exe /link /SUBSYSTEM:CONSOLE winusb.lib setupapi.lib"
+          if ($LASTEXITCODE) { throw "cl failed: $LASTEXITCODE" }
+          $deps = cmd /c "`"$vcvars`" x64_arm64 >nul && dumpbin /nologo /dependents out\ec20at.exe"
+          $deps | Out-Host
+          if ($deps -match 'VCRUNTIME|MSVCP|ucrtbase|api-ms-win-crt') { throw 'ec20at.exe depends on a CRT DLL; it must be built with /MT' }
+          $b = [IO.File]::ReadAllBytes('out\ec20at.exe')
+          $pe = [BitConverter]::ToInt32($b, 0x3c)
+          $machine = [BitConverter]::ToUInt16($b, $pe + 4)
+          if ($machine -ne 0xAA64) { throw ('ec20at.exe machine is 0x{0:X4}, not ARM64 (0xAA64)' -f $machine) }
+          Write-Host ('ec20at.exe: ARM64, {0} bytes' -f $b.Length)
+
+      - name: Validate, catalog and sign the INFs
+        shell: pwsh
+        run: |
+          $kits = 'C:\Program Files (x86)\Windows Kits\10'
+          $st   = Join-Path $kits "bin\$env:WDK_VERSION\x86\signtool.exe"
+          $i2c  = Join-Path $kits "bin\$env:WDK_VERSION\x86\inf2cat.exe"
+          $iv   = (Get-ChildItem $kits -Recurse -Filter infverif.exe -ErrorAction SilentlyContinue |
+                     Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1).FullName
+          if (-not $iv) { throw 'infverif.exe not found in the WDK' }
+          Write-Host "infverif: $iv"
+          $pkg = 'pkg\ec20-woa-arm64'
+          $drv = @{ usbser = 'ec20-ports'; winusb = 'ec20-winusb' }
+          foreach ($k in $drv.Keys) {
+            $d = Join-Path $pkg "driver\$k"
+            New-Item -ItemType Directory -Force -Path $d | Out-Null
+            Copy-Item "inf\$k\$($drv[$k]).inf" $d
+            # Basic validation; must pass.
+            & $iv /v "$d\$($drv[$k]).inf"
+            if ($LASTEXITCODE) { throw "infverif /v failed on ${k}: $LASTEXITCODE" }
+            # Windows Driver requirements: for the log only. These packages
+            # are not meant for submission.
+            & $iv /w "$d\$($drv[$k]).inf"
+            Write-Host "infverif /w on ${k}: exit $LASTEXITCODE (informational)"
+            $global:LASTEXITCODE = 0
+          }
+          $pw   = [guid]::NewGuid().ToString()
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=ec20-woa test signing' `
+                    -CertStoreLocation Cert:\CurrentUser\My -HashAlgorithm SHA256 -NotAfter (Get-Date).AddYears(5)
+          Export-PfxCertificate -Cert $cert -FilePath C:\t.pfx -Password (ConvertTo-SecureString $pw -Force -AsPlainText) | Out-Null
+          Export-Certificate -Cert $cert -FilePath "$pkg\ec20-woa-test.cer" | Out-Null
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "CERT_NOTAFTER=$($cert.NotAfter.ToString('yyyy-MM-dd'))" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          # The target is Windows 11 23H2 (10_NI); 24H2 (10_GE) cannot run on
+          # an ARMv8.0 CPU such as the RK3576's.
+          foreach ($k in $drv.Keys) {
+            $d = (Resolve-Path (Join-Path $pkg "driver\$k")).Path
+            & $i2c /driver:"$d" /os:10_RS3_ARM64,10_RS4_ARM64,10_RS5_ARM64,10_19H1_ARM64,10_VB_ARM64,10_CO_ARM64,10_NI_ARM64
+            if ($LASTEXITCODE) { throw "inf2cat failed on ${k}: $LASTEXITCODE" }
+            & $st sign /fd sha256 /f C:\t.pfx /p $pw "$d\$($drv[$k]).cat"
+            if ($LASTEXITCODE) { throw "signtool failed on ${k}: $LASTEXITCODE" }
+          }
+          Remove-Item C:\t.pfx
+          Get-ChildItem -Recurse $pkg | Format-Table FullName, Length
+
+      - name: Verify the signatures
+        shell: pwsh
+        run: |
+          # Trust this run's certificate the way INSTALL.txt tells the user
+          # to, verify with the default Authenticode policy, then untrust it.
+          $PSNativeCommandUseErrorActionPreference = $false
+          $st  = 'C:\Program Files (x86)\Windows Kits\10\bin\' + $env:WDK_VERSION + '\x86\signtool.exe'
+          $pkg = 'pkg\ec20-woa-arm64'
+          certutil -f -addstore Root "$pkg\ec20-woa-test.cer" | Out-Null
+          certutil -f -addstore TrustedPublisher "$pkg\ec20-woa-test.cer" | Out-Null
+          foreach ($n in 'usbser\ec20-ports', 'winusb\ec20-winusb') {
+            $cat = "$pkg\driver\$n.cat"
+            $inf = "$pkg\driver\$n.inf"
+            & $st verify /pa /q /c $cat $inf
+            if ($LASTEXITCODE) { throw "$inf is not in $cat, or the catalog does not verify" }
+            Write-Host "in the catalog: $inf"
+            $s = Get-AuthenticodeSignature $cat
+            if ($s.SignerCertificate.Thumbprint -ne $env:CERT_THUMBPRINT) { throw "$cat is not signed by this run's certificate" }
+            # The check can fail: a changed INF is not in the catalog.
+            New-Item -ItemType Directory -Force bad | Out-Null
+            Copy-Item $inf bad\
+            $leaf = Split-Path $inf -Leaf
+            Add-Content "bad\$leaf" '; changed'
+            & $st verify /pa /q /c $cat "bad\$leaf"
+            if (-not $LASTEXITCODE) { throw "a changed $leaf passed the catalog check" }
+            $global:LASTEXITCODE = 0
+          }
+          certutil -delstore Root $env:CERT_THUMBPRINT | Out-Null
+          certutil -delstore TrustedPublisher $env:CERT_THUMBPRINT | Out-Null
+          exit 0
+
+      - name: Assemble the package
+        shell: pwsh
+        run: |
+          $pkg = 'pkg\ec20-woa-arm64'
+          New-Item -ItemType Directory -Force -Path "$pkg\tools" | Out-Null
+          Copy-Item tools\*.ps1, tools\Ec20.psm1, out\ec20at.exe "$pkg\tools\"
+          Copy-Item README.md, LICENSE $pkg
+          $info = @(
+            (Get-Content INSTALL.txt -Raw).TrimEnd(),
+            '',
+            'THIS BUILD',
+            '',
+            "  Commit:       $env:GITHUB_SHA ($env:GITHUB_REF_NAME)",
+            "  CI run:       $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID",
+            "  Certificate:  CN=ec20-woa test signing, SHA1 $env:CERT_THUMBPRINT,",
+            "                valid until $env:CERT_NOTAFTER; made for this CI run only",
+            ''
+          )
+          ($info -join "`r`n") | Set-Content -NoNewline -Encoding ascii "$pkg\INSTALL.txt"
+          Get-ChildItem -Recurse -File $pkg | Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { '{0}  {1}' -f $_.Hash.ToLowerInvariant(), ($_.Path.Substring((Resolve-Path $pkg).Path.Length + 1)) } |
+            Set-Content -Encoding ascii "$pkg\SHA256SUMS.txt"
+          Get-Content "$pkg\SHA256SUMS.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ec20-woa-arm64
+          path: pkg/
+          if-no-files-found: error

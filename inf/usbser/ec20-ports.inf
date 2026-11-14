@@ -1,0 +1,86 @@
+;
+; ec20-ports.inf
+;
+; Binds the Microsoft inbox USB serial driver (usbser.sys) to the four
+; serial-type interfaces of a Quectel EC20 / EC25 (USB 2C7C:0125) so that
+; they appear as COM ports on Windows 10/11 ARM64. This package contains no
+; driver binary: usbser.sys and usbser.inf ship with Windows.
+;
+; Interfaces bound (USB function MI_xx of the composite device):
+;   MI_00  class FF/FF/FF  DM / diagnostic port
+;   MI_01  class FF/00/00  NMEA output of the GNSS receiver
+;   MI_02  class FF/00/00  AT command port
+;   MI_03  class FF/00/00  modem port (AT commands and PPP)
+; Interfaces NOT bound:
+;   MI_04  class FF/FF/FF  QMI network function (rmnet). Windows has no inbox
+;          QMI driver. Use MBIM mode instead (see README.md).
+;   MI_05  class 01        USB Audio (UAC), already handled by the inbox
+;          usbaudio driver.
+; The interface roles come from the Linux kernel: drivers/usb/serial/qcserial.c
+; (handle_quectel_ec20) and Quectel's "LTE&5G Linux USB Driver User Guide"
+; V2.0, Table 2.
+;
+; Why usbser.sys: Microsoft documents usbser.sys for CDC ACM devices
+; (class 02, subclass 02), see "USB serial driver (Usbser.sys)":
+; https://learn.microsoft.com/windows-hardware/drivers/usbcon/usb-driver-installation-based-on-compatible-ids
+; These interfaces are vendor class (FF), so usbser.sys does not load on its
+; own. They do implement the CDC ACM requests that matter for an AT port:
+; Linux sends CDC SET_CONTROL_LINE_STATE to them (drivers/usb/serial/usb_wwan.c)
+; and reads CDC SERIAL_STATE notifications from their interrupt endpoint
+; (option_instat_callback in drivers/usb/serial/option.c). Whether usbser.sys
+; accepts a single vendor-class interface with no CDC functional descriptors
+; is NOT documented by Microsoft and has NOT been tested on hardware. If a
+; port shows Code 10 after installing this package, install the WinUSB
+; package (inf\winusb\ec20-winusb.inf) instead and use tools\ec20at.exe.
+;
+; How usbser.inf is reused: by Include= and Needs= of the sections of the
+; inbox usbser.inf (UsbSerial_Install.NT, .NT.Hw and .NT.Services). That is
+; how usbser.inf itself marks those sections ("for use with Include/Needs").
+; The older pattern in Microsoft's documentation, Include=mdmcpq.inf with
+; usbser as a lower filter, is not usable here: mdmcpq.inf is not present on
+; the target Windows 11 23H2 ARM64 install.
+;
+; Unofficial. Not written, tested or endorsed by Quectel. MIT licence, see
+; LICENSE in the repository.
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = Ports
+ClassGuid   = {4D36E978-E325-11CE-BFC1-08002BE10318}
+Provider    = %Provider%
+CatalogFile = ec20-ports.cat
+DriverVer   = 11/14/2026,1.0.0.0
+PnpLockdown = 1
+
+[Manufacturer]
+%Mfg% = Ec20Ports, NTarm64.10.0
+
+[Ec20Ports.NTarm64.10.0]
+%Ec20.Diag%  = Ec20Port_Install, USB\VID_2C7C&PID_0125&MI_00
+%Ec20.Nmea%  = Ec20Port_Install, USB\VID_2C7C&PID_0125&MI_01
+%Ec20.At%    = Ec20Port_Install, USB\VID_2C7C&PID_0125&MI_02
+%Ec20.Modem% = Ec20Port_Install, USB\VID_2C7C&PID_0125&MI_03
+
+; Everything below is taken from the inbox usbser.inf by reference: the copy
+; of usbser.sys, the Ports class registry values (PortSubClass and the
+; MsPorts.dll property page) and the usbser service.
+[Ec20Port_Install.NT]
+Include = usbser.inf
+Needs   = UsbSerial_Install.NT
+
+[Ec20Port_Install.NT.HW]
+Include = usbser.inf
+Needs   = UsbSerial_Install.NT.Hw
+
+[Ec20Port_Install.NT.Services]
+Include = usbser.inf
+Needs   = UsbSerial_Install.NT.Services
+
+[Strings]
+Provider   = "ec20-woa (unofficial)"
+Mfg        = "Quectel EC2x, ec20-woa community INF"
+Ec20.Diag  = "EC20 DM diagnostic port (usbser)"
+Ec20.Nmea  = "EC20 NMEA GNSS port (usbser)"
+Ec20.At    = "EC20 AT command port (usbser)"
+Ec20.Modem = "EC20 modem port (usbser)"

@@ -1,0 +1,120 @@
+;
+; ec20-winusb.inf
+;
+; Binds the Microsoft inbox generic USB driver (winusb.sys) to the four
+; serial-type interfaces of a Quectel EC20 / EC25 (USB 2C7C:0125). This is the
+; fallback for the usbser package (inf\usbser\ec20-ports.inf): WinUSB does
+; not care what protocol an interface speaks, so it starts on any interface
+; with bulk endpoints. The price is that no COM port appears; programs talk to
+; the interfaces through the WinUSB API instead. tools\ec20at.exe in this
+; repository does that for AT commands and for reading NMEA.
+; This package contains no driver binary: winusb.sys and winusb.inf ship with
+; Windows.
+;
+; Interfaces bound, each with its own device interface GUID so that a program
+; can open one role without guessing:
+;   MI_00  class FF/FF/FF  DM / diagnostic   {B9951A67-6973-4FAF-8AF1-63462F733EC3}
+;   MI_01  class FF/00/00  NMEA (GNSS)       {AB461143-C18E-4250-A9E2-9B2C99110A39}
+;   MI_02  class FF/00/00  AT commands       {9D19419D-3DB7-4E33-B16C-E4B395AA31E0}
+;   MI_03  class FF/00/00  modem (AT, PPP)   {199F29DC-376F-490A-B44D-547BB62A6997}
+; Interfaces NOT bound:
+;   MI_04  class FF/FF/FF  QMI network function; use MBIM mode (README.md).
+;   MI_05  class 01        USB Audio, handled by the inbox usbaudio driver.
+; Interface roles: Linux drivers/usb/serial/qcserial.c (handle_quectel_ec20)
+; and Quectel's "LTE&5G Linux USB Driver User Guide" V2.0, Table 2.
+;
+; The install sections follow Microsoft's "WinUSB (Winusb.sys) installation"
+; page: Include=winusb.inf with Needs=WINUSB.NT and WINUSB.NT.Services, and
+; the device interface GUID in DeviceInterfaceGUIDs (REG_MULTI_SZ) under the
+; device's hardware key.
+; https://learn.microsoft.com/windows-hardware/drivers/usbcon/winusb-installation
+;
+; Unofficial. Not written, tested or endorsed by Quectel. MIT licence, see
+; LICENSE in the repository.
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = USBDevice
+ClassGuid   = {88BAE032-5A81-49F0-BC3D-A4FF138216D6}
+Provider    = %Provider%
+CatalogFile = ec20-winusb.cat
+DriverVer   = 11/14/2026,1.0.0.0
+PnpLockdown = 1
+
+[Manufacturer]
+%Mfg% = Ec20WinUsb, NTarm64.10.0
+
+[Ec20WinUsb.NTarm64.10.0]
+%Ec20.Diag%  = Ec20Diag_Install,  USB\VID_2C7C&PID_0125&MI_00
+%Ec20.Nmea%  = Ec20Nmea_Install,  USB\VID_2C7C&PID_0125&MI_01
+%Ec20.At%    = Ec20At_Install,    USB\VID_2C7C&PID_0125&MI_02
+%Ec20.Modem% = Ec20Modem_Install, USB\VID_2C7C&PID_0125&MI_03
+
+; MI_00, diagnostic port
+[Ec20Diag_Install.NT]
+Include = winusb.inf
+Needs   = WINUSB.NT
+
+[Ec20Diag_Install.NT.Services]
+Include = winusb.inf
+Needs   = WINUSB.NT.Services
+
+[Ec20Diag_Install.NT.HW]
+AddReg = Ec20Diag_AddReg
+
+[Ec20Diag_AddReg]
+HKR,,DeviceInterfaceGUIDs,0x10000,"{B9951A67-6973-4FAF-8AF1-63462F733EC3}"
+
+; MI_01, NMEA port
+[Ec20Nmea_Install.NT]
+Include = winusb.inf
+Needs   = WINUSB.NT
+
+[Ec20Nmea_Install.NT.Services]
+Include = winusb.inf
+Needs   = WINUSB.NT.Services
+
+[Ec20Nmea_Install.NT.HW]
+AddReg = Ec20Nmea_AddReg
+
+[Ec20Nmea_AddReg]
+HKR,,DeviceInterfaceGUIDs,0x10000,"{AB461143-C18E-4250-A9E2-9B2C99110A39}"
+
+; MI_02, AT command port
+[Ec20At_Install.NT]
+Include = winusb.inf
+Needs   = WINUSB.NT
+
+[Ec20At_Install.NT.Services]
+Include = winusb.inf
+Needs   = WINUSB.NT.Services
+
+[Ec20At_Install.NT.HW]
+AddReg = Ec20At_AddReg
+
+[Ec20At_AddReg]
+HKR,,DeviceInterfaceGUIDs,0x10000,"{9D19419D-3DB7-4E33-B16C-E4B395AA31E0}"
+
+; MI_03, modem port
+[Ec20Modem_Install.NT]
+Include = winusb.inf
+Needs   = WINUSB.NT
+
+[Ec20Modem_Install.NT.Services]
+Include = winusb.inf
+Needs   = WINUSB.NT.Services
+
+[Ec20Modem_Install.NT.HW]
+AddReg = Ec20Modem_AddReg
+
+[Ec20Modem_AddReg]
+HKR,,DeviceInterfaceGUIDs,0x10000,"{199F29DC-376F-490A-B44D-547BB62A6997}"
+
+[Strings]
+Provider   = "ec20-woa (unofficial)"
+Mfg        = "Quectel EC2x, ec20-woa community INF"
+Ec20.Diag  = "EC20 DM diagnostic port (WinUSB)"
+Ec20.Nmea  = "EC20 NMEA GNSS port (WinUSB)"
+Ec20.At    = "EC20 AT command port (WinUSB)"
+Ec20.Modem = "EC20 modem port (WinUSB)"
