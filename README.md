@@ -38,7 +38,7 @@ not that it works.
 | `ec20-ports.inf` (usbser COM ports) | measured: four COM ports, AT answers (one run) |
 | `ec20-winusb.inf` + `ec20at.exe` | builds, signs; untested |
 | PowerShell scripts | `Install-Ec20Driver`, `Send-Ec20At`, `Get-Ec20Status` run on the board; the others untested |
-| MBIM mobile data | documented procedure only; untested on Windows |
+| MBIM mobile data | `Set-Ec20UsbNet.ps1` checks each step; untested on Windows |
 | GNSS, call audio | AT sequences measured under Linux on this module; untested on Windows |
 
 ## The device
@@ -220,63 +220,121 @@ Remove everything: `.\tools\Install-Ec20Driver.ps1 -Variant None`.
 
 ## Mobile data: MBIM
 
-Windows has no inbox driver for QMI, the module's factory-default network
-function (MI_04). It does have one for MBIM: the Mobile Broadband class
-driver, `wmbclass.sys`, installed by `netwmbclass.inf`. The EC20 can switch
-its network function to MBIM with `AT+QCFG="usbnet",2`
-([Quectel LTE&5G Linux USB Driver User Guide][qlinux] V2.0, Table 4:
-0 = GobiNet/QMI_WWAN, 2 = CDC_MBIM; 1 = ECM and 3 = RNDIS are the other
-values in Quectel's AT manual, from memory). Quectel's forum staff say the
-same for Windows: "The RNDIS and MBIM driver is not provided by Quectel"
-and "MBIM driver is the native driver of the Microsoft Windows" (forum
-post, 2024, about an EM06-E).
+In the factory mode (`AT+QCFG="usbnet",0`) the network function MI_04 is
+QMI (FF/FF/FF). Windows has no inbox QMI driver, so MI_04 stays a device
+with a yellow mark (code 28). No INF in this repository binds it, on
+purpose: an INF for `USB\VID_2C7C&PID_0125&MI_04`, even a null one, would
+also win over the inbox MBIM driver after a switch to MBIM, because the
+hardware ID is the same in both modes and a hardware-ID match outranks the
+class match the MBIM driver uses. The way to a working MI_04 is MBIM.
 
-On the board, `C:\Windows\INF\netwmbclass.inf` is present and
-`wmbclass.sys` is not in `System32\drivers`. That is expected for an inbox
-driver that has never been used: the file lives in the driver store until a
-device needs it (from memory; check with the first command below).
+Quectel's Windows NDIS/QMI driver is not an option: Quectel staff wrote in
+2024 that ARM64 Windows drivers are not released by default ("For special
+customers, please create a ticket"), the downloads need a Quectel account,
+and nothing in them may be redistributed here.
+
+### What changes in MBIM mode
+
+`AT+QCFG="usbnet",2` (then `AT+CFUN=1,1` or a power cycle) turns the
+network function into CDC MBIM. Windows has an inbox driver for that, the
+Mobile Broadband class driver (`wmbclass.sys`, `netwmbclass.inf`), which
+binds by class, not by VID/PID.
+
+| | QMI (0) | MBIM (2) | Source |
+|---|---|---|---|
+| USB ID | 2C7C:0125 | 2C7C:0125 (unchanged) | a published lsusb of an EG25-G in MBIM mode; Linux matches the serial ports by interface class only |
+| MI_00..MI_03 (DM, NMEA, AT, modem) | FF class, COM ports | the same numbers and classes, so `ec20-ports.inf` keeps matching and the COM numbers stay | the same lsusb; Quectel's Linux guide (option.c skips every interface that is not class FF) |
+| Network | MI_04 FF/FF/FF (QMI) | MI_04 02/0E/00 (MBIM control) + MI_05 0A/00/02 (MBIM data) | the same lsusb |
+| USB Audio (UAC) | MI_05 | expected to move up to MI_06 and above, a new device that the inbox usbaudio driver installs by itself; not measured | inferred |
+
+Not known until measured on this module: whether the firmware groups the
+two MBIM interfaces with an Interface Association Descriptor. Windows'
+composite driver (usbccgp) puts them together into one function only with an
+IAD (or a Microsoft OS descriptor, which this module does not have). With an
+IAD, Device Manager shows one "MI_04" function that wmbclass binds; without
+one, MI_04 and MI_05 appear separately and the MBIM driver cannot start.
+Qualcomm's MBIM gadget function, which this generation of Quectel firmware
+is built on, does declare an IAD, so the first case is expected.
+`Set-Ec20UsbNet.ps1` reports which one happened.
+
+Also not known: whether firmware EC20CEFILGR08A03M1G accepts `usbnet,2`
+at all (an EC25-AU needed a firmware update before it did). The script reads
+the value back before and after the reset and stops if it did not stick.
+
+### What MBIM does not change, and what it does
+
+- AT, GNSS (NMEA) and voice calls stay on the serial ports; Windows' MBIM
+  stack has no call control, so calls are made with AT commands as before
+  ("Voice call audio" below), and their audio stays on UAC.
+- Windows manages the modem through MBIM once wmbclass binds (WWAN AutoConfig,
+  `WwanSvc`): it asks for the SIM PIN, turns the radio off in airplane mode,
+  and **may write APNs into the module's profile table** (provisioned
+  contexts persist across power cycles by specification). Linux on the same
+  board can then see a different default APN.
+- Data over Cellular may be metered by the SIM. Windows shows the connection
+  as cellular and connects automatically unless that is turned off in
+  Settings > Network & internet > Cellular.
+
+### Switching (on Windows)
+
+Check first that the inbox driver is present:
 
 ```powershell
 Get-ChildItem C:\Windows\System32\DriverStore\FileRepository -Filter 'netwmbclass.inf_*' |
     ForEach-Object { Get-ChildItem $_.FullName -Filter wmbclass.sys }
-Get-Service WwanSvc                       # WWAN AutoConfig must exist
-.\tools\Set-Ec20UsbNet.ps1 -Query         # +QCFG: "usbnet",0 today
-.\tools\Set-Ec20UsbNet.ps1 -Mode MBIM     # asks for confirmation, then resets the module
+Get-Service WwanSvc
 ```
 
-The setting is stored in the module and survives power cycles. After the
-reset (about 30 s) the network function enumerates as a CDC MBIM function
-(class 02, subclass 0E, plus its data interface) instead of the FF/FF/FF
-QMI interface. In Quectel's Linux option patch, the serial interfaces stay
-interfaces 0 to 3 in every usbnet mode (interfaces that are not class FF
-are skipped as network functions), so the COM ports keep their hardware
-IDs. The MBIM interface numbers, the position of the USB Audio function
-after the switch, and whether the PID stays 0125 were not measured; run
-`Get-Ec20Status.ps1` and report the table. If the PID changes, neither INF
-matches any more.
+Then, with the AT port's COM number (COM6 on the TaishanPi 3M test board):
 
-Then on Windows (expected, untested):
+```powershell
+.\tools\Set-Ec20UsbNet.ps1 -Query -Port COM6     # usbnet 0 today, and the USB functions
+.\tools\Set-Ec20UsbNet.ps1 -Mode MBIM -Port COM6 # asks, sets, reads back, resets, waits, reads back, checks
+```
 
-1. Device Manager > Network adapters shows a mobile broadband adapter
-   (wmbclass), and Settings > Network & internet shows **Cellular**.
-2. Unlock the SIM: Windows asks for the PIN in the Cellular page, or run
-   `Enter-Ec20SimPin.ps1` first.
-3. APN: Cellular > Mobile operator settings > Add APN, if Windows does not
-   pick one from its operator database.
-4. Check: `netsh mbn show interfaces`, `netsh mbn show readyinfo *`.
+The same by hand, on any terminal at 115200 8N1 on the AT port:
 
-Way back to QMI: `.\tools\Set-Ec20UsbNet.ps1 -Mode QMI`.
+```
+AT+QCFG="usbnet"         -> +QCFG: "usbnet",0   OK
+AT+QCFG="usbnet",2       -> OK
+AT+QCFG="usbnet"         -> +QCFG: "usbnet",2   OK   (read back before the reset)
+AT+CFUN=1,1              -> the module resets, the COM ports vanish for 20 to 40 s
+AT+QCFG="usbnet"         -> +QCFG: "usbnet",2   OK   (after it is back)
+```
 
-**Effect on the Linux install on the same board.** The setting lives in
-the module, so Linux sees MBIM too until it is switched back. Inferred from
-the kernel tables: `qmi_wwan` no longer binds (there is no FF/FF/FF network
-interface), `cdc_mbim` binds by class instead, and `option` still creates
-ttyUSB0 to ttyUSB3 on interfaces 0 to 3, so udev rules keyed on interface
-numbers 02 and 03 (the TaishanPi 3M voice-audio service on ttyUSB3) keep
-working. ModemManager supports MBIM modems, so a data connection should
-still come up, but over a different protocol path than the QMI one that was
-tested; if it does not, switch back from Linux with `AT+QCFG="usbnet",0`
-on ttyUSB2 followed by `AT+CFUN=1,1`.
+Pass: the script ends with "MBIM is bound to wmbclass" and exit code 0;
+Device Manager > Network adapters lists a mobile broadband adapter; Settings
+> Network & internet shows **Cellular**; `netsh mbn show interfaces` lists one
+interface. Exit code 4 with "two separate functions" means no IAD: switch
+back.
+
+Switching back to the factory mode:
+
+```powershell
+.\tools\Set-Ec20UsbNet.ps1 -Mode QMI -Port COM6
+```
+
+or by hand `AT+QCFG="usbnet",0`, read back, `AT+CFUN=1,1`.
+
+### Effect on Linux on the same board
+
+The mode lives in the module, so Linux sees MBIM too until it is switched
+back. From the kernel tables: `qmi_wwan` no longer binds (there is no
+FF/FF/FF network interface), `cdc_mbim` binds by class, and `option` still
+creates ttyUSB0 to ttyUSB3 on interfaces 0 to 3. Udev rules keyed on
+interface numbers 02 and 03 (the TaishanPi 3M voice service on ttyUSB3)
+keep working, and the call-audio sequence (`AT+QPCMV=1,2` after
+registration) is AT, unaffected by the mode.
+
+ModemManager supports MBIM modems and its Quectel plugin handles MBIM.
+In MBIM mode, MM's voice support comes from its generic AT implementation on
+ttyUSB2 rather than from QMI's voice service, so GNOME Calls should still
+place and receive calls, by a different path; this has not been tried on
+this board. A ModemManager maintainer noted in 2020 that an EC25 in MBIM
+mode does not support MM's initial EPS bearer settings, which matters for a
+VoLTE-only SIM if the attach APN must be set from Linux. If anything on
+Linux breaks, switch back from Linux: `AT+QCFG="usbnet",0` on ttyUSB2, read
+it back, then `AT+CFUN=1,1`.
 
 ## GNSS
 
@@ -338,8 +396,9 @@ INSTALL.txt                   short version of the above, shipped in the artifac
 1. Does usbser.sys start on MI_01 to MI_03, and on MI_00 (no interrupt
    endpoint)? Does the module accept `SET_LINE_CODING`?
 2. Does the AT port answer without DTR? (`ec20at.exe --no-dtr AT`)
-3. After `usbnet,2`: the new interface numbers, the PID, and whether Windows
-   brings up the Cellular page with this firmware.
+3. After `usbnet,2`: whether this firmware accepts it, whether it declares
+   an IAD for MBIM, where UAC moves, and whether Windows brings up the
+   Cellular page.
 4. Endpoint counts of MI_01 to MI_03 (`ec20at.exe --list`).
 
 ## Licence

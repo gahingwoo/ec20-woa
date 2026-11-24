@@ -26,8 +26,21 @@ function Get-Ec20Interface {
         if ($d.InstanceId -match '&MI_([0-9A-F]{2})') { $mi = [Convert]::ToInt32($Matches[1], 16) }
         $role = ''
         foreach ($k in $Script:RoleMi.Keys) { if ($Script:RoleMi[$k] -eq $mi) { $role = $k } }
-        if ($mi -eq 4) { $role = 'Network' }
-        if ($mi -eq 5) { $role = 'Audio' }
+        # The functions after MI_03 depend on AT+QCFG="usbnet" and on the UAC
+        # setting, so they are named by their USB class, not their number:
+        # QMI (usbnet 0) is FF/FF/FF at MI_04; MBIM (usbnet 2) is a 02/0E
+        # communication interface plus a 0A data interface; UAC audio is
+        # class 01 and moves up when MBIM takes two interface numbers.
+        if ($mi -ge 4) {
+            $cids = @()
+            if ($d.PSObject.Properties['CompatibleID'] -and $d.CompatibleID) { $cids = @($d.CompatibleID) }
+            $c = ($cids -join ' ').ToUpperInvariant()
+            if ($c -match 'CLASS_02&SUBCLASS_0E') { $role = 'MBIM' }
+            elseif ($c -match 'CLASS_0A') { $role = 'MBIM data' }
+            elseif ($c -match 'CLASS_01') { $role = 'Audio' }
+            elseif ($c -match 'CLASS_FF&SUBCLASS_FF') { $role = 'QMI' }
+            elseif ($mi -eq 4) { $role = 'Network' }
+        }
         $port = $null
         $key = 'HKLM:\SYSTEM\CurrentControlSet\Enum\' + $d.InstanceId + '\Device Parameters'
         $pp = Get-ItemProperty -Path $key -Name PortName -ErrorAction SilentlyContinue
@@ -52,7 +65,15 @@ function Get-Ec20Transport {
     Decides how to reach one role: a COM port (usbser) or ec20at.exe (WinUSB).
     #>
     [CmdletBinding()]
-    param([ValidateSet('At', 'Modem', 'Nmea', 'Diag')][string]$Role = 'At')
+    param(
+        [ValidateSet('At', 'Modem', 'Nmea', 'Diag')][string]$Role = 'At',
+        # A COM port to use as is (for example COM6), without looking it up.
+        [string]$Port
+    )
+    if ($Port) {
+        if ($Port -notmatch '^COM\d+$') { throw "-Port must look like COM6, not '$Port'." }
+        return [pscustomobject]@{ Kind = 'Serial'; Port = $Port.ToUpperInvariant(); Role = $Role; Interface = $null }
+    }
     $mi = 'MI_{0:D2}' -f $Script:RoleMi[$Role]
     $i = @(Get-Ec20Interface | Where-Object { $_.MI -eq $mi }) | Select-Object -First 1
     if (-not $i) {
@@ -103,9 +124,10 @@ function Invoke-Ec20At {
         [ValidateSet('At', 'Modem', 'Nmea', 'Diag')][string]$Role = 'At',
         [int]$TimeoutMs = 5000,
         [string[]]$Secret = @(),
-        [switch]$Quiet
+        [switch]$Quiet,
+        [string]$Port
     )
-    $t = Get-Ec20Transport -Role $Role
+    $t = Get-Ec20Transport -Role $Role -Port $Port
     $lines = New-Object System.Collections.Generic.List[string]
     $final = $null
     if ($t.Kind -eq 'Serial') {
