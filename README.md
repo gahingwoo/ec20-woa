@@ -237,7 +237,8 @@ and nothing in them may be redistributed here.
 
 `AT+QCFG="usbnet",2` (then `AT+CFUN=1,1` or a power cycle) turns the
 network function into CDC MBIM. Windows has an inbox driver for that, the
-Mobile Broadband class driver (`wmbclass.sys`, `netwmbclass.inf`), which
+Mobile Broadband class driver (`netwmbclass.inf`; on 23H2 its service and
+file are `cxwmbclass`/`cxwmbclass.sys`, older builds `wmbclass`), which
 binds by class, not by VID/PID.
 
 | | QMI (0) | MBIM (2) | Source |
@@ -281,7 +282,7 @@ Check first that the inbox driver is present:
 
 ```powershell
 Get-ChildItem C:\Windows\System32\DriverStore\FileRepository -Filter 'netwmbclass.inf_*' |
-    ForEach-Object { Get-ChildItem $_.FullName -Filter wmbclass.sys }
+    ForEach-Object { Get-ChildItem $_.FullName -Filter *wmbclass.sys }
 Get-Service WwanSvc
 ```
 
@@ -302,7 +303,7 @@ AT+CFUN=1,1              -> the module resets, the COM ports vanish for 20 to 40
 AT+QCFG="usbnet"         -> +QCFG: "usbnet",2   OK   (after it is back)
 ```
 
-Pass: the script ends with "MBIM is bound to wmbclass" and exit code 0;
+Pass: the script ends with "MBIM is bound to cxwmbclass" and exit code 0;
 Device Manager > Network adapters lists a mobile broadband adapter; Settings
 > Network & internet shows **Cellular**; `netsh mbn show interfaces` lists one
 interface. Exit code 4 with "two separate functions" means no IAD: switch

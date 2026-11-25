@@ -134,11 +134,13 @@ switch ($Mode) {
         if (-not $m) {
             Write-Host 'No MBIM (02/0E) function is present. If MI_04 and MI_05 appear as two separate functions, the module has no IAD for MBIM and Windows cannot group them; switch back with -Mode QMI.'
             $ok = $false
-        } elseif ($m[0].Status -ne 'OK' -or $m[0].Service -ne 'wmbclass') {
-            Write-Host ('The MBIM function is ' + $m[0].Status + ' with service ' + $m[0].Service + ', not OK on wmbclass.')
+        } elseif ($m[0].Status -ne 'OK' -or $m[0].Service -notmatch '^(cx)?wmbclass$') {
+            # netwmbclass.inf names the service cxwmbclass on 22621 (23H2)
+            # and wmbclass on older builds
+            Write-Host ('The MBIM function is ' + $m[0].Status + ' with service ' + $m[0].Service + ', not OK on the in-box MBIM driver (cxwmbclass).')
             $ok = $false
         } else {
-            Write-Host 'MBIM is bound to wmbclass. Settings > Network & internet > Cellular should be there now.'
+            Write-Host ('MBIM is bound to ' + $m[0].Service + '. Settings > Network & internet > Cellular should be there now.')
             Write-Host 'Check: netsh mbn show interfaces ; netsh mbn show readyinfo *'
         }
     }
