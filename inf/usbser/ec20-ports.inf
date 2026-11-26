@@ -1,24 +1,62 @@
 ;
 ; ec20-ports.inf
 ;
-; Binds the Microsoft inbox USB serial driver (usbser.sys) to the four
-; serial-type interfaces of a Quectel EC20 / EC25 (USB 2C7C:0125) so that
-; they appear as COM ports on Windows 10/11 ARM64. This package contains no
+; Binds the Microsoft inbox USB serial driver (usbser.sys) to the three
+; serial interfaces of a Quectel EC20 / EC25 (USB 2C7C:0125), NMEA, AT and
+; modem, so that they appear as COM ports on Windows 10/11 ARM64, in every
+; USB network mode of the module. This package contains no
 ; driver binary: usbser.sys and usbser.inf ship with Windows.
 ;
-; Interfaces bound (USB function MI_xx of the composite device):
-;   MI_00  class FF/FF/FF  DM / diagnostic port
-;   MI_01  class FF/00/00  NMEA output of the GNSS receiver
-;   MI_02  class FF/00/00  AT command port
-;   MI_03  class FF/00/00  modem port (AT commands and PPP)
-; Interfaces NOT bound:
-;   MI_04  class FF/FF/FF  QMI network function (rmnet). Windows has no inbox
-;          QMI driver. Use MBIM mode instead (see README.md).
-;   MI_05  class 01        USB Audio (UAC), already handled by the inbox
-;          usbaudio driver.
-; The interface roles come from the Linux kernel: drivers/usb/serial/qcserial.c
-; (handle_quectel_ec20) and Quectel's "LTE&5G Linux USB Driver User Guide"
-; V2.0, Table 2.
+; What is matched, and why not by hardware ID:
+;   The EC20 renumbers its interfaces with the USB network mode
+;   (AT+QCFG="usbnet"), so an interface number does not name a role. In
+;   QMI and MBIM mode MI_00 is the DM port; in RNDIS mode MI_00 is the
+;   RNDIS control interface (class E0/01/03), and a hardware-ID match on
+;   USB\VID_2C7C&PID_0125&MI_00 outranks the in-box RNDIS driver's
+;   class match (wceisvista.inf, USB\Class_E0&SubClass_01&Prot_03): on the
+;   TaishanPi 3M (2026-11-26) the RNDIS function got usbser.sys and failed
+;   to start. The rank of a match cannot depend on the class when the
+;   match is by hardware ID, so this INF matches by a compatible ID that
+;   carries the class instead:
+;
+;     USB\COMPAT_VID_2c7c&Class_ff&SubClass_00&Prot_00
+;
+;   Windows generates it for every interface of a Quectel (VID 2C7C)
+;   composite device; seen on the board on the EC20's FF/00/00 interfaces.
+;   In every usbnet mode, class FF/00/00 is exactly the NMEA, AT and modem
+;   ports, and nothing else:
+;
+;            usbnet 0 QMI   usbnet 2 MBIM  usbnet 3 RNDIS
+;   MI_00    DM     FF/FF/FF DM     FF/FF/FF RNDIS  E0/01/03 (+ data)
+;   MI_01    NMEA   FF/00/00 NMEA   FF/00/00 (part of the RNDIS function)
+;   MI_02    AT     FF/00/00 AT     FF/00/00 DM     FF/FF/FF
+;   MI_03    modem  FF/00/00 modem  FF/00/00 NMEA   FF/00/00
+;   MI_04    QMI    FF/FF/FF MBIM   02/0E/00 AT     FF/00/00
+;   MI_05    audio  01       (MBIM data)     modem  FF/00/00
+;   MI_06                    audio  01       audio  01
+;
+;   (README.md has this table with what was measured and what inferred.)
+;   Not matched, on purpose:
+;   - DM (FF/FF/FF). In QMI mode the QMI network function is FF/FF/FF too,
+;     and the only thing that tells the two apart is the interface number,
+;     which moves. Binding usbser.sys to the QMI function would take it
+;     from any QMI driver installed later, so DM stays without a driver.
+;     Nothing here uses DM.
+;   - The network functions (QMI, MBIM 02/0E, RNDIS E0, ECM 02/06): they
+;     keep the in-box class drivers (cxwmbclass, wceisvista) or none.
+;   - USB audio (01): in-box usbaudio.
+;   Side effect: the match names the vendor, not the product, so FF/00/00
+;   interfaces of other Quectel USB modules get usbser.sys as well. On the
+;   Qualcomm-based modules (EC2x, EG2x, EM05, EP06) those are the same kind
+;   of NMEA/AT/modem ports.
+;   All three ports get the same name; the scripts tell them apart by
+;   order: the lowest-numbered FF/00/00 interface is NMEA, then AT, then
+;   modem.
+;
+; The interface roles come from the Linux kernel: drivers/usb/serial/option.c
+; (EC25/EC20 entries match by class: FF/FF/FF with two endpoints is DIAG,
+; FF/00/00 the serial ports) and Quectel's "LTE&5G Linux USB Driver User
+; Guide" V2.0, Table 2 and section 3.2.5 (network interfaces skipped).
 ;
 ; Why usbser.sys: Microsoft documents usbser.sys for CDC ACM devices
 ; (class 02, subclass 02), see "USB serial driver (Usbser.sys)":
@@ -50,17 +88,14 @@ Class       = Ports
 ClassGuid   = {4D36E978-E325-11CE-BFC1-08002BE10318}
 Provider    = %Provider%
 CatalogFile = ec20-ports.cat
-DriverVer   = 11/14/2026,1.0.0.0
+DriverVer   = 11/26/2026,2.0.0.0
 PnpLockdown = 1
 
 [Manufacturer]
 %Mfg% = Ec20Ports, NTarm64.10.0
 
 [Ec20Ports.NTarm64.10.0]
-%Ec20.Diag%  = Ec20Port_Install, USB\VID_2C7C&PID_0125&MI_00
-%Ec20.Nmea%  = Ec20Port_Install, USB\VID_2C7C&PID_0125&MI_01
-%Ec20.At%    = Ec20Port_Install, USB\VID_2C7C&PID_0125&MI_02
-%Ec20.Modem% = Ec20Port_Install, USB\VID_2C7C&PID_0125&MI_03
+%Ec20.Serial% = Ec20Port_Install, USB\COMPAT_VID_2c7c&Class_ff&SubClass_00&Prot_00
 
 ; Everything below is taken from the inbox usbser.inf by reference: the copy
 ; of usbser.sys, the Ports class registry values (PortSubClass and the
@@ -78,9 +113,6 @@ Include = usbser.inf
 Needs   = UsbSerial_Install.NT.Services
 
 [Strings]
-Provider   = "ec20-woa (unofficial)"
-Mfg        = "Quectel EC2x, ec20-woa community INF"
-Ec20.Diag  = "EC20 DM diagnostic port (usbser)"
-Ec20.Nmea  = "EC20 NMEA GNSS port (usbser)"
-Ec20.At    = "EC20 AT command port (usbser)"
-Ec20.Modem = "EC20 modem port (usbser)"
+Provider    = "ec20-woa (unofficial)"
+Mfg         = "Quectel EC2x, ec20-woa community INF"
+Ec20.Serial = "Quectel EC2x serial port (usbser)"

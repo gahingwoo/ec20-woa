@@ -25,6 +25,23 @@ jobs:
             exit 1
           fi
 
+      - name: ec20-ports.inf matches by class, never by interface number
+        run: |
+          python3 - <<'EOF'
+          import re, sys
+          inf = open('inf/usbser/ec20-ports.inf', encoding='ascii').read()
+          body = re.sub(r'(?m);.*$', '', inf)
+          models = re.search(r'\[Ec20Ports\.NTarm64\.10\.0\](.*?)(?=^\[)', body, re.S | re.M).group(1)
+          ids = [i.strip().upper() for line in models.splitlines() if '=' in line
+                 for i in line.split('=', 1)[1].split(',')[1:]]
+          print('match IDs:', ids)
+          # A hardware ID with MI_xx outranks the in-box RNDIS and MBIM class
+          # matches when the module's usbnet mode moves a network function
+          # onto that number.
+          if ids != ['USB\\COMPAT_VID_2C7C&CLASS_FF&SUBCLASS_00&PROT_00']:
+              sys.exit('ec20-ports.inf must match only the FF/00/00 compatible ID')
+          EOF
+
       - name: ec20at.c uses the device interface GUIDs of ec20-winusb.inf
         run: |
           python3 - <<'EOF'

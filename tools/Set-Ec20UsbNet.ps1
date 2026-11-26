@@ -7,8 +7,10 @@ Selects the EC20's USB network function (AT+QCFG="usbnet") and resets it.
   ECM   = 1  CDC ECM. Linux cdc_ether. Whether Windows 11 23H2 has an inbox
              driver for CDC ECM was not checked; not used here.
   MBIM  = 2  CDC MBIM. Windows inbox Mobile Broadband (wmbclass), Linux cdc_mbim.
-  RNDIS = 3  RNDIS. Windows has an inbox RNDIS driver, but it gives no
-             Windows cellular UI; not recommended.
+  RNDIS = 3  RNDIS. Windows inbox RNDIS driver (wceisvista.inf): an
+             Ethernet adapter, no Windows cellular UI; the module dials.
+             The AT port moves to MI_04 (README.md, "Interfaces per usbnet
+             mode"); the scripts find it by class.
 The setting is stored in the module and survives power cycles. The module
 resets (AT+CFUN=1,1), drops off USB and comes back after about 20 to 30
 seconds with a different set of interfaces.
@@ -39,8 +41,14 @@ foreach ($l in $cur.Lines) { if ($l -match '"usbnet",\s*(\d+)') { $now = [int]$M
 if ($now -eq $want) { Write-Host ('Already ' + $Mode + ' (' + $want + ').'); exit 0 }
 
 if ($PSCmdlet.ShouldProcess('EC20', ('set usbnet to ' + $Mode + ' (' + $want + ') and reset the module'))) {
-    $r = Invoke-Ec20At -Command ('AT+QCFG="usbnet",' + $want)
-    if (-not $r.Ok) { throw 'The module rejected the usbnet setting.' }
+    $r = Invoke-Ec20At -Command ('AT+QCFG="usbnet",' + $want) -TimeoutMs 15000
+    # The read-back decides, not the reply: EC20CEFILGR08A03M1G answers
+    # ERROR to usbnet 2 and 3 and stores the value anyway (TaishanPi 3M,
+    # 2026-11-26).
+    $rb = $null
+    foreach ($l in (Invoke-Ec20At -Command 'AT+QCFG="usbnet"').Lines) { if ($l -match '"usbnet",\s*(\d+)') { $rb = [int]$Matches[1] } }
+    if ($rb -ne $want) { throw ('The module did not take usbnet ' + $want + ': reply ' + $r.Final + ', read-back ' + $rb + '.') }
+    if (-not $r.Ok) { Write-Host ('The set gave ' + $r.Final + ' but the read-back is ' + $rb + '; going on.') }
     if ($NoReset) { Write-Host 'Set. It takes effect at the next module reset (AT+CFUN=1,1) or power cycle.'; exit 0 }
     # The module resets while answering, so a missing reply is expected.
     try { Invoke-Ec20At -Command 'AT+CFUN=1,1' -TimeoutMs 3000 | Out-Null } catch { }
