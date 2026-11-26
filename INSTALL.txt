@@ -1,6 +1,9 @@
 ec20-woa: Quectel EC20/EC25 (USB 2C7C:0125) on Windows 11 ARM64
 
-NOTHING IN THIS PACKAGE HAS BEEN TESTED ON HARDWARE YET. See README.md.
+Tested on one board: the COM ports and AT commands (QMI mode). Mobile
+data does not work: MBIM and RNDIS were tried on firmware
+EC20CEFILGR08A03M1G and pass no data. Keep the module in QMI mode
+(AT+QCFG="usbnet",0) and never bind MI_04 in that mode. See README.md.
 
 CONTENTS
 
