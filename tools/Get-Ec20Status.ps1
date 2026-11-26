@@ -14,7 +14,7 @@ $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'Ec20.psm1') -Force
 
 Write-Host 'EC20 interfaces as Windows sees them:'
-Get-Ec20Interface | Sort-Object MI | Format-Table MI, Role, Status, Service, ComPort, Name -AutoSize | Out-Host
+Get-Ec20Interface | Sort-Object MI | Format-Table MI, Class, Role, Status, Service, ComPort, Name -AutoSize | Out-Host
 
 $queries = @(
     'ATI',                 # manufacturer, model, revision

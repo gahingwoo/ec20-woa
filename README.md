@@ -35,10 +35,12 @@ not that it works.
 | Part | State |
 |---|---|
 | Device enumeration (below) | measured |
-| `ec20-ports.inf` (usbser COM ports) | measured: four COM ports, AT answers (one run) |
+| `ec20-ports.inf` 1.0 (usbser, MI_00..MI_03 by hardware ID) | measured in QMI mode: four COM ports, AT answers (one run); breaks RNDIS mode |
+| `ec20-ports.inf` 2.0 (usbser, class FF/00/00 by compatible ID) | builds, signs; not yet on the board |
 | `ec20-winusb.inf` + `ec20at.exe` | builds, signs; untested |
 | PowerShell scripts | `Install-Ec20Driver`, `Send-Ec20At`, `Get-Ec20Status` run on the board; the others untested |
-| MBIM mobile data | documented procedure only; untested on Windows |
+| MBIM mobile data | board-tested 2026-11-26: the module never answers MBIM OPEN on this firmware, no data |
+| RNDIS mobile data | not yet tried |
 | GNSS, call audio | AT sequences measured under Linux on this module; untested on Windows |
 
 ## The device
@@ -49,7 +51,7 @@ EC20CEFILGR08A03M1G (from the same module under Linux).
 
 | Function | Class/Sub/Proto | Role | Windows before this package | This package |
 |---|---|---|---|---|
-| MI_00 | FF/FF/FF | DM (diagnostic, Qualcomm DIAG) | no driver | usbser or WinUSB |
+| MI_00 | FF/FF/FF | DM (diagnostic, Qualcomm DIAG) | no driver | WinUSB only (usbser 2.0 leaves DM unbound) |
 | MI_01 | FF/00/00 | NMEA output of the GNSS receiver | no driver | usbser or WinUSB |
 | MI_02 | FF/00/00 | AT commands | no driver | usbser or WinUSB |
 | MI_03 | FF/00/00 | modem (AT commands, PPP) | no driver | usbser or WinUSB |
@@ -68,12 +70,64 @@ comment says the DIAG function "has exactly 2 endpoints"). So MI_00 has two
 bulk endpoints and no interrupt endpoint. The endpoint counts of MI_01 to
 MI_03 were not measured; `ec20at.exe --list` prints them.
 
+## Interfaces per usbnet mode
+
+The module renumbers its interfaces when its USB network mode
+(`AT+QCFG="usbnet"`) changes. The serial ports keep their classes and their
+order, not their numbers.
+
+| MI | usbnet 0, QMI | usbnet 2, MBIM | usbnet 3, RNDIS |
+|---|---|---|---|
+| 00 | DM, FF/FF/FF | DM, FF/FF/FF | RNDIS control, E0/01/03 |
+| 01 | NMEA, FF/00/00 | NMEA, FF/00/00 | RNDIS data, 0A/00/00 (same function as MI_00) |
+| 02 | AT, FF/00/00 | AT, FF/00/00 | DM, FF/FF/FF |
+| 03 | modem, FF/00/00 | modem, FF/00/00 | NMEA, FF/00/00 |
+| 04 | QMI network, FF/FF/FF | MBIM control, 02/0E/00 | AT, FF/00/00 |
+| 05 | audio, 01 | MBIM data, 0A (same function as MI_04) | modem, FF/00/00 |
+| 06 | | audio, 01 | audio, 01 |
+
+Measured (TaishanPi 3M, EC20CEFILGR08A03M1G): the QMI column
+(2026-11-14); in MBIM mode MI_04 bound to `cxwmbclass` (2026-11-26); in
+RNDIS mode the classes of MI_00 and MI_02..MI_06 (2026-11-26). Inferred:
+MI_01 in RNDIS mode (no separate device appears, so Windows grouped it
+with MI_00), the MBIM data interface and the audio position in MBIM mode,
+and which of the RNDIS-mode FF/00/00 ports is AT: Quectel's Linux guide
+puts the serial ports on interfaces 2 to 5 in ECM and RNDIS mode, in the
+same order (DM, NMEA, AT, modem). ECM (usbnet 1) is expected to look like
+the RNDIS column with a CDC ECM function (02/06) on MI_00; not measured,
+and Windows 11 has no in-box CDC ECM driver.
+
+How `ec20-ports.inf` picks the ports. A hardware ID such as
+`USB\VID_2C7C&PID_0125&MI_00` names a number, and the number means DM in
+one mode and RNDIS in another. A hardware-ID match also outranks every
+compatible-ID match, so version 1.0 took the RNDIS function away from the
+in-box RNDIS driver (`wceisvista.inf` matches
+`USB\Class_E0&SubClass_01&Prot_03`); on the board MI_00 then failed to
+start. Version 2.0 matches one compatible ID that carries the class:
+`USB\COMPAT_VID_2c7c&Class_ff&SubClass_00&Prot_00`, which Windows
+generates for each FF/00/00 interface of a VID 2C7C device. In every
+column above that is exactly NMEA, AT and modem. Not bound, on purpose:
+
+- DM (FF/FF/FF). In QMI mode the QMI network function is FF/FF/FF as well,
+  and only the interface number, which moves, tells the two apart. DM is
+  left without a driver (Device Manager shows it with code 28); nothing
+  here uses it.
+- The network functions keep their in-box class drivers (MBIM
+  `cxwmbclass`, RNDIS `wceisvista`) or stay without one (QMI).
+
+Side effects: the three ports share one name, "Quectel EC2x serial port
+(usbser)", and the scripts tell them apart by order (lowest FF/00/00
+interface NMEA, then AT, then modem). The match names the vendor, not the
+product, so FF/00/00 interfaces of other Quectel modules get usbser.sys
+too. `ec20-winusb.inf` still matches by number and is only right in QMI
+and MBIM mode; `Install-Ec20Driver.ps1 -Variant WinUsb` refuses otherwise.
+
 ## Serial ports: what was chosen and why
 
 Three ways to get the AT, NMEA, modem and diag interfaces working on ARM64
 Windows without Quectel's driver were considered.
 
-**(a) usbser.sys through an INF that names the hardware IDs.**
+**(a) usbser.sys through an INF (by hardware ID in 1.0, by class since 2.0).**
 Microsoft documents usbser.sys for CDC ACM devices: it loads by itself on
 `USB\Class_02&SubClass_02`, and for any other class "you might need to
 load your own driver or write an INF file that references another in-box
@@ -155,10 +209,12 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\tools\Install-Ec20Driver.ps1 -Variant Usbser -ImportCertificate
 ```
 
-Expected: Device Manager > Ports (COM & LPT) shows "EC20 AT command port
-(usbser) (COMn)", the same for the NMEA, modem and DM diagnostic ports,
-and the script's table shows a COM port for MI_00 to MI_03. MI_04 stays
-without a driver. MI_05 is unchanged.
+Expected: Device Manager > Ports (COM & LPT) shows three "Quectel EC2x
+serial port (usbser) (COMn)", and the script's table shows a COM port for
+the Nmea, At and Modem roles (MI_01..MI_03 in QMI and MBIM mode, MI_03..MI_05
+in RNDIS mode). DM and, in QMI mode, MI_04 stay without a driver. Audio is
+unchanged. Upgrading from 1.0 is the same command: it removes the old
+package (and the devices installed from it) before adding the new one.
 
 Before installing, it is worth checking that the ARM64 `usbser.inf` has the
 sections `ec20-ports.inf` names (they were read from an x64 copy):
@@ -278,6 +334,18 @@ still come up, but over a different protocol path than the QMI one that was
 tested; if it does not, switch back from Linux with `AT+QCFG="usbnet",0`
 on ttyUSB2 followed by `AT+CFUN=1,1`.
 
+## Mobile data: RNDIS
+
+Fallback while MBIM does not answer on this firmware.
+`.\tools\Set-Ec20UsbNet.ps1 -Mode RNDIS` switches; the module answers
+ERROR and stores the value anyway, so the script trusts the read-back.
+After the reset MI_00 should bind the in-box RNDIS driver
+(`wceisvista.inf`) and a "Remote NDIS" network adapter appears. That needs
+`ec20-ports.inf` 2.0: 1.0 takes MI_00. The module dials and runs NAT
+itself; Windows sees an Ethernet adapter that gets its address by DHCP from
+the module, with no Cellular page. The dial and DHCP sequence is in
+woa-rk3576 `tools/ec20/ec20-mode.ps1 -Connect`.
+
 ## GNSS
 
 ```powershell
@@ -324,8 +392,8 @@ first difference to look at.
 ## Repository layout
 
 ```
-inf/usbser/ec20-ports.inf     usbser.sys for MI_00..MI_03 (COM ports)
-inf/winusb/ec20-winusb.inf    winusb.sys for MI_00..MI_03, one interface GUID per role
+inf/usbser/ec20-ports.inf     usbser.sys for the FF/00/00 ports (NMEA, AT, modem), any usbnet mode
+inf/winusb/ec20-winusb.inf    winusb.sys for MI_00..MI_03, one interface GUID per role (QMI/MBIM only)
 tools/ec20at/ec20at.c         AT and NMEA over WinUSB
 tools/Ec20.psm1               shared helpers: find ports, send AT, redact secrets
 tools/*.ps1                   install, status, PIN, usbnet mode, GNSS, call audio

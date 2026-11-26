@@ -4,8 +4,8 @@ NOTHING IN THIS PACKAGE HAS BEEN TESTED ON HARDWARE YET. See README.md.
 
 CONTENTS
 
-  driver\usbser\   ec20-ports.inf + .cat   COM ports through the inbox usbser.sys
-  driver\winusb\   ec20-winusb.inf + .cat  WinUSB binding, for tools\ec20at.exe
+  driver\usbser\   ec20-ports.inf + .cat   COM ports through the inbox usbser.sys (any usbnet mode)
+  driver\winusb\   ec20-winusb.inf + .cat  WinUSB binding, for tools\ec20at.exe (QMI/MBIM mode only)
   tools\           PowerShell scripts, Ec20.psm1, ec20at.exe (ARM64)
   ec20-woa-test.cer                        the certificate this CI run signed with
   README.md
@@ -19,8 +19,9 @@ INSTALL (elevated Windows PowerShell, in the folder this file is in)
   Set-ExecutionPolicy -Scope Process Bypass
   .\tools\Install-Ec20Driver.ps1 -Variant Usbser -ImportCertificate
 
-  Device Manager > Ports (COM & LPT) should then list four "EC20 ... (usbser)"
-  ports. Test:
+  Device Manager > Ports (COM & LPT) should then list three "Quectel EC2x
+  serial port (usbser)" ports (NMEA, AT, modem), in every usbnet mode.
+  This also removes an older ec20-ports.inf. Test:
 
   .\tools\Send-Ec20At.ps1 AT                 (expect: OK)
   .\tools\Get-Ec20Status.ps1

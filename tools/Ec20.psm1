@@ -10,33 +10,53 @@
 Set-StrictMode -Version 2
 
 $Script:HwPrefix = 'USB\VID_2C7C&PID_0125&MI_'
+# Used only when the interface classes cannot be read: the QMI/MBIM layout.
 $Script:RoleMi = @{ Diag = 0; Nmea = 1; At = 2; Modem = 3 }
+
+function Get-Ec20InterfaceClass {
+    # "FF/00/00" from the interface's compatible IDs, or '' if unreadable.
+    param([string]$InstanceId)
+    try {
+        $cids = (Get-PnpDeviceProperty -InstanceId $InstanceId -KeyName DEVPKEY_Device_CompatibleIds -ErrorAction Stop).Data
+        foreach ($c in @($cids)) {
+            if ($c -match '^USB\\Class_([0-9A-F]{2})&SubClass_([0-9A-F]{2})&Prot_([0-9A-F]{2})$') {
+                return ($Matches[1] + '/' + $Matches[2] + '/' + $Matches[3]).ToUpperInvariant()
+            }
+        }
+    } catch {}
+    return ''
+}
 
 function Get-Ec20Interface {
     <#
     .SYNOPSIS
     Lists the functions (MI_xx) of the EC20 that Windows currently sees.
+    .DESCRIPTION
+    The interface numbers move with the USB network mode (AT+QCFG="usbnet"):
+    the AT port is MI_02 in QMI and MBIM mode and MI_04 in RNDIS mode. So
+    the roles come from the classes: the FF/00/00 interfaces in ascending
+    order are NMEA, AT and modem in every mode, the first FF/FF/FF one is
+    DM, and the rest is network (QMI FF/FF/FF, MBIM 02/0E, RNDIS E0,
+    ECM 02/06) or audio (01). See README.md, "Interfaces per usbnet mode".
     #>
     [CmdletBinding()]
     param()
     $devs = @(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
         Where-Object { $_.InstanceId -like ($Script:HwPrefix + '*') })
+    $rows = @()
     foreach ($d in $devs) {
         $mi = -1
         if ($d.InstanceId -match '&MI_([0-9A-F]{2})') { $mi = [Convert]::ToInt32($Matches[1], 16) }
-        $role = ''
-        foreach ($k in $Script:RoleMi.Keys) { if ($Script:RoleMi[$k] -eq $mi) { $role = $k } }
-        if ($mi -eq 4) { $role = 'Network' }
-        if ($mi -eq 5) { $role = 'Audio' }
         $port = $null
         $key = 'HKLM:\SYSTEM\CurrentControlSet\Enum\' + $d.InstanceId + '\Device Parameters'
         $pp = Get-ItemProperty -Path $key -Name PortName -ErrorAction SilentlyContinue
         if ($pp) { $port = $pp.PortName }
         $svc = $null
         if ($d.PSObject.Properties['Service']) { $svc = $d.Service }
-        [pscustomobject]@{
+        $rows += [pscustomobject]@{
             MI         = ('MI_{0:D2}' -f $mi)
-            Role       = $role
+            Class      = (Get-Ec20InterfaceClass $d.InstanceId)
+            Role       = ''
             Status     = $d.Status
             Service    = $svc
             ComPort    = $port
@@ -44,6 +64,26 @@ function Get-Ec20Interface {
             InstanceId = $d.InstanceId
         }
     }
+    $rows = @($rows | Sort-Object MI)
+    if (@($rows | Where-Object { -not $_.Class }).Count) {
+        foreach ($r in $rows) {
+            $mi = [Convert]::ToInt32($r.MI.Substring(3), 10)
+            foreach ($k in $Script:RoleMi.Keys) { if ($Script:RoleMi[$k] -eq $mi) { $r.Role = $k } }
+            if ($mi -eq 4) { $r.Role = 'Network' }
+            if ($mi -eq 5) { $r.Role = 'Audio' }
+        }
+        return $rows
+    }
+    $serial = @('Nmea', 'At', 'Modem'); $n = 0; $dm = $false
+    foreach ($r in $rows) {
+        switch -Regex ($r.Class) {
+            '^FF/00/00$' { if ($n -lt 3) { $r.Role = $serial[$n] }; $n++ }
+            '^FF/FF/FF$' { if (-not $dm) { $r.Role = 'Diag'; $dm = $true } else { $r.Role = 'Network' } }
+            '^(02/0E|02/06|E0/|0A/)' { $r.Role = 'Network' }
+            '^01/' { $r.Role = 'Audio' }
+        }
+    }
+    return $rows
 }
 
 function Get-Ec20Transport {
@@ -53,15 +93,19 @@ function Get-Ec20Transport {
     #>
     [CmdletBinding()]
     param([ValidateSet('At', 'Modem', 'Nmea', 'Diag')][string]$Role = 'At')
-    $mi = 'MI_{0:D2}' -f $Script:RoleMi[$Role]
-    $i = @(Get-Ec20Interface | Where-Object { $_.MI -eq $mi }) | Select-Object -First 1
+    $i = @(Get-Ec20Interface | Where-Object { $_.Role -eq $Role }) | Select-Object -First 1
     if (-not $i) {
-        throw "The EC20 $Role interface ($mi) is not present. Is the module powered and enumerated (Get-PnpDevice -InstanceId 'USB\VID_2C7C&PID_0125*')?"
+        throw "The EC20 $Role interface is not present. Is the module powered and enumerated (Get-PnpDevice -InstanceId 'USB\VID_2C7C&PID_0125*')?"
     }
+    $mi = $i.MI
     if ($i.ComPort) {
         return [pscustomobject]@{ Kind = 'Serial'; Port = $i.ComPort; Role = $Role; Interface = $i }
     }
     if ($i.Service -and $i.Service -ieq 'WinUSB') {
+        # ec20-winusb.inf names roles by interface number (QMI/MBIM layout).
+        if ($i.MI -ne ('MI_{0:D2}' -f $Script:RoleMi[$Role])) {
+            throw "$mi is the $Role port in this usbnet mode, but ec20-winusb.inf and ec20at.exe know only the QMI/MBIM layout. Use the usbser package (tools\Install-Ec20Driver.ps1 -Variant Usbser)."
+        }
         $exe = Find-Ec20AtExe
         if (-not $exe) { throw "$mi is bound to WinUSB but ec20at.exe was not found next to the scripts." }
         return [pscustomobject]@{ Kind = 'WinUsb'; Port = $exe; Role = $Role; Interface = $i }
