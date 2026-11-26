@@ -8,7 +8,7 @@ board.
 
 The repository contains no driver binary and nothing from Quectel. The two
 INF files bind drivers that ship with Windows (`usbser.sys`, `winusb.sys`);
-the mobile data path uses the inbox Mobile Broadband class driver.
+mobile data does not work yet (see "Mobile data").
 
 ## Status
 
@@ -39,8 +39,8 @@ not that it works.
 | `ec20-ports.inf` 2.0 (usbser, class FF/00/00 by compatible ID) | builds, signs; not yet on the board |
 | `ec20-winusb.inf` + `ec20at.exe` | builds, signs; untested |
 | PowerShell scripts | `Install-Ec20Driver`, `Send-Ec20At`, `Get-Ec20Status` run on the board; the others untested |
-| MBIM mobile data | board-tested 2026-11-26: the module never answers MBIM OPEN on this firmware, no data |
-| RNDIS mobile data | not yet tried |
+| MBIM mobile data (usbnet 2) | board-tested 2026-11-26: does not work, the module never answers MBIM OPEN |
+| RNDIS mobile data (usbnet 3) | board-tested 2026-11-26: does not work, the adapter enumerates but forwards nothing |
 | GNSS, call audio | AT sequences measured under Linux on this module; untested on Windows |
 
 ## The device
@@ -274,77 +274,30 @@ time.
 
 Remove everything: `.\tools\Install-Ec20Driver.ps1 -Variant None`.
 
-## Mobile data: MBIM
+## Mobile data: not working, keep the module in QMI mode
 
-Windows has no inbox driver for QMI, the module's factory-default network
-function (MI_04). It does have one for MBIM: the Mobile Broadband class
-driver, `wmbclass.sys`, installed by `netwmbclass.inf`. The EC20 can switch
-its network function to MBIM with `AT+QCFG="usbnet",2`
-([Quectel LTE&5G Linux USB Driver User Guide][qlinux] V2.0, Table 4:
-0 = GobiNet/QMI_WWAN, 2 = CDC_MBIM; 1 = ECM and 3 = RNDIS are the other
-values in Quectel's AT manual, from memory). Quectel's forum staff say the
-same for Windows: "The RNDIS and MBIM driver is not provided by Quectel"
-and "MBIM driver is the native driver of the Microsoft Windows" (forum
-post, 2024, about an EM06-E).
+Keep the module in QMI mode (`AT+QCFG="usbnet",0`, the factory default)
+until Quectel has firmware that works. Board-tested on 2026-11-26 with
+firmware EC20CEFILGR08A03M1G:
 
-On the board, `C:\Windows\INF\netwmbclass.inf` is present and
-`wmbclass.sys` is not in `System32\drivers`. That is expected for an inbox
-driver that has never been used: the file lives in the driver store until a
-device needs it (from memory; check with the first command below).
+- MBIM (`usbnet` 2): the MBIM function binds the in-box `cxwmbclass`, but
+  the module never answers MBIM OPEN. No Cellular page, no data.
+- RNDIS (`usbnet` 3): the RNDIS adapter enumerates but forwards nothing;
+  `AT+QNETDEVCTL` and `AT$QCRMCALL` return ERROR.
+- QMI (`usbnet` 0): Windows has no in-box QMI driver. Never bind MI_04
+  (the QMI function) to anything in this mode.
+
+Check the mode, and go back to QMI:
 
 ```powershell
-Get-ChildItem C:\Windows\System32\DriverStore\FileRepository -Filter 'netwmbclass.inf_*' |
-    ForEach-Object { Get-ChildItem $_.FullName -Filter wmbclass.sys }
-Get-Service WwanSvc                       # WWAN AutoConfig must exist
-.\tools\Set-Ec20UsbNet.ps1 -Query         # +QCFG: "usbnet",0 today
-.\tools\Set-Ec20UsbNet.ps1 -Mode MBIM     # asks for confirmation, then resets the module
+.\tools\Set-Ec20UsbNet.ps1 -Query        # expect +QCFG: "usbnet",0
+.\tools\Set-Ec20UsbNet.ps1 -Mode QMI     # asks for confirmation, then resets the module
 ```
 
-The setting is stored in the module and survives power cycles. After the
-reset (about 30 s) the network function enumerates as a CDC MBIM function
-(class 02, subclass 0E, plus its data interface) instead of the FF/FF/FF
-QMI interface. In Quectel's Linux option patch, the serial interfaces stay
-interfaces 0 to 3 in every usbnet mode (interfaces that are not class FF
-are skipped as network functions), so the COM ports keep their hardware
-IDs. The MBIM interface numbers, the position of the USB Audio function
-after the switch, and whether the PID stays 0125 were not measured; run
-`Get-Ec20Status.ps1` and report the table. If the PID changes, neither INF
-matches any more.
-
-Then on Windows (expected, untested):
-
-1. Device Manager > Network adapters shows a mobile broadband adapter
-   (wmbclass), and Settings > Network & internet shows **Cellular**.
-2. Unlock the SIM: Windows asks for the PIN in the Cellular page, or run
-   `Enter-Ec20SimPin.ps1` first.
-3. APN: Cellular > Mobile operator settings > Add APN, if Windows does not
-   pick one from its operator database.
-4. Check: `netsh mbn show interfaces`, `netsh mbn show readyinfo *`.
-
-Way back to QMI: `.\tools\Set-Ec20UsbNet.ps1 -Mode QMI`.
-
-**Effect on the Linux install on the same board.** The setting lives in
-the module, so Linux sees MBIM too until it is switched back. Inferred from
-the kernel tables: `qmi_wwan` no longer binds (there is no FF/FF/FF network
-interface), `cdc_mbim` binds by class instead, and `option` still creates
-ttyUSB0 to ttyUSB3 on interfaces 0 to 3, so udev rules keyed on interface
-numbers 02 and 03 (the TaishanPi 3M voice-audio service on ttyUSB3) keep
-working. ModemManager supports MBIM modems, so a data connection should
-still come up, but over a different protocol path than the QMI one that was
-tested; if it does not, switch back from Linux with `AT+QCFG="usbnet",0`
-on ttyUSB2 followed by `AT+CFUN=1,1`.
-
-## Mobile data: RNDIS
-
-Fallback while MBIM does not answer on this firmware.
-`.\tools\Set-Ec20UsbNet.ps1 -Mode RNDIS` switches; the module answers
-ERROR and stores the value anyway, so the script trusts the read-back.
-After the reset MI_00 should bind the in-box RNDIS driver
-(`wceisvista.inf`) and a "Remote NDIS" network adapter appears. That needs
-`ec20-ports.inf` 2.0: 1.0 takes MI_00. The module dials and runs NAT
-itself; Windows sees an Ethernet adapter that gets its address by DHCP from
-the module, with no Cellular page. The dial and DHCP sequence is in
-woa-rk3576 `tools/ec20/ec20-mode.ps1 -Connect`.
+The module replies ERROR to a usbnet set that does apply, so trust the
+read-back after the reset (about 30 s), not the reply. The setting is
+stored in the module, so Linux on the same board sees the same mode; from
+Linux, `AT+QCFG="usbnet",0` on ttyUSB2 and then `AT+CFUN=1,1`.
 
 ## GNSS
 
@@ -406,9 +359,7 @@ INSTALL.txt                   short version of the above, shipped in the artifac
 1. Does usbser.sys start on MI_01 to MI_03, and on MI_00 (no interrupt
    endpoint)? Does the module accept `SET_LINE_CODING`?
 2. Does the AT port answer without DTR? (`ec20at.exe --no-dtr AT`)
-3. After `usbnet,2`: the new interface numbers, the PID, and whether Windows
-   brings up the Cellular page with this firmware.
-4. Endpoint counts of MI_01 to MI_03 (`ec20at.exe --list`).
+3. Endpoint counts of MI_01 to MI_03 (`ec20at.exe --list`).
 
 ## Licence
 
